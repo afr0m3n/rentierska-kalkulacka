@@ -27,6 +27,7 @@ export function createDefaultMember(currentYear: number, overrides: Partial<Memb
     rentEndAge: 85,
     pensionAge: 65,
     pensionStartYear: (overrides.birthYear ?? 1990) + (overrides.pensionAge ?? 65),
+    pensionYearSource: Object.hasOwn(overrides, 'pensionStartYear') ? 'explicit' : 'suggested',
     pensionStartMonth: null,
     monthlyPension: 20_000,
     ...overrides,

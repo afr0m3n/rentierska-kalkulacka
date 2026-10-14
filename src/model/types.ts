@@ -23,9 +23,11 @@ export interface MemberInput {
   dpsDrawdownYears: number;
   rentStartAge: number;
   rentEndAge: number;
-  /** Retained for v2/v3 migration only; simulation uses explicit pension date. */
+  /** Used for the proposed year and v2/v3 migration; simulation uses the date. */
   pensionAge: number;
   pensionStartYear: number;
+  /** Older stored dates without this metadata are treated as explicit. */
+  pensionYearSource: 'suggested' | 'explicit';
   pensionStartMonth: number | null;
   monthlyPension: number;
 }

@@ -28,10 +28,13 @@ export function parseStoredState(raw: string | null, currentYear: number): Calcu
         const value = data[key];
         if (key === 'name') member.name = typeof value === 'string' ? value : '';
         else if (key === 'active') member.active = value !== false;
+        else if (key === 'pensionYearSource') member.pensionYearSource = value === 'suggested' ? 'suggested' : 'explicit';
         else if (key === 'birthMonth' || key === 'pensionStartMonth') member[key] = typeof value === 'number' ? value : null;
         else member[key] = typeof value === 'number' ? value : Number.NaN;
       }
       if (!('pensionStartYear' in data)) member.pensionStartYear = member.birthYear + member.pensionAge;
+      // No metadata means the old date's authorship is unknown: preserve it.
+      if (!('pensionYearSource' in data)) member.pensionYearSource = 'explicit';
       members.push(member);
     }
     const g = { ...defaults.assumptions };

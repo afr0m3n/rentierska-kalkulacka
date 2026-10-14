@@ -107,6 +107,105 @@ test('household views respect different starts and fit the viewport', async ({ p
   await page.screenshot({ path: testInfo.outputPath('results-viewport.png') });
 });
 
+test('review: a positive implausibly early pension blocks results and PDF', async ({ page }) => {
+  await completeDates(page);
+  await field(page, 'pensionStartYear', '1990');
+  await field(page, 'pensionStartMonth', '10');
+  await expect(page.locator('[data-warning="0"]')).toContainText('limit kalkulačky');
+  await expect(page.locator('#kpis .kcard')).toHaveCount(0);
+  await expect(page.locator('#exportPdf')).toBeDisabled();
+  await field(page, 'pensionStartYear', '2016');
+  await expect(page.locator('[data-warning="0"]')).toContainText('nejdříve od 50 let');
+  await field(page, 'pensionStartYear', '2040');
+  await field(page, 'pensionStartMonth', '9');
+  await expect(page.locator('#exportPdf')).toBeDisabled();
+  await field(page, 'pensionStartMonth', '10');
+  await expect(page.locator('#kpis .kcard')).toHaveCount(1);
+});
+
+test('review: suggested pension years follow birth edits, explicit and stored years remain fixed', async ({ page }) => {
+  await completeDates(page);
+  await field(page, 'birthYear', '2000');
+  await expect(page.locator('[data-key="pensionStartYear"]')).toHaveValue('2065');
+  await expect(page.locator('[data-pension-hint="0"]')).toContainText('Navržený');
+  await field(page, 'birthYear', '1970');
+  await expect(page.locator('[data-key="pensionStartYear"]')).toHaveValue('2035');
+  await field(page, 'pensionStartYear', '2040');
+  await field(page, 'birthYear', '1980');
+  await expect(page.locator('[data-key="pensionStartYear"]')).toHaveValue('2040');
+  await expect(page.locator('[data-pension-hint="0"]')).toContainText('neposune');
+  await page.locator('#saveDraft').check();
+  await page.reload();
+  await field(page, 'birthYear', '1975');
+  await expect(page.locator('[data-key="pensionStartYear"]')).toHaveValue('2040');
+  await expect(page.locator('#kpis .kcard')).toHaveCount(1);
+});
+
+test('review: first and last partial-year income bars fit entirely inside the plot', async ({ page }) => {
+  // Record real canvas geometry, rather than a production-only testing hook.
+  await page.addInitScript(() => {
+    const recorder = window as unknown as { rentRects: Array<{ x: number; y: number; width: number; height: number }> };
+    recorder.rentRects = [];
+    const rect = CanvasRenderingContext2D.prototype.rect;
+    CanvasRenderingContext2D.prototype.rect = function (x, y, width, height) {
+      if (this.canvas.id === 'rentChart') recorder.rentRects.push({ x, y, width, height });
+      return rect.call(this, x, y, width, height);
+    };
+  });
+  await page.reload();
+  await completeDates(page);
+  await field(page, 'birthYear', '1966');
+  await field(page, 'rentEndAge', '61');
+  await field(page, 'monthlyDps', '0');
+  await field(page, 'monthlyInvestment', '0');
+  await field(page, 'targetMonthlyRent', '1000');
+  await field(page, 'monthlyPension', '2000');
+  await field(page, 'pensionStartYear', '2026');
+  await page.evaluate(() => { (window as unknown as { rentRects: unknown[] }).rentRects = []; });
+  await field(page, 'pensionStartMonth', '10');
+  await expect(page.locator('#kpis .kcard')).toHaveCount(1);
+  const geometry = await page.locator('#rentChart').evaluate((canvas: HTMLCanvasElement) => {
+    const rects = (window as unknown as { rentRects: Array<{ x: number; y: number; width: number; height: number }> }).rentRects;
+    const plot = rects.filter((rect) => rect.width > canvas.clientWidth * .5 && rect.x > 0 && rect.y > 0 && rect.height > 50).at(-1)!;
+    const bars = rects.filter((rect) => rect.x > 0 && rect.y > 0 && rect.width > 0 && rect.width < canvas.clientWidth * .5 && rect.height > 1);
+    return { plot, bars };
+  });
+  expect(geometry.plot).toBeDefined();
+  expect(geometry.bars).toHaveLength(2);
+  for (const bar of geometry.bars) {
+    expect(bar.x).toBeGreaterThanOrEqual(geometry.plot.x - .5);
+    expect(bar.x + bar.width).toBeLessThanOrEqual(geometry.plot.x + geometry.plot.width + .5);
+  }
+  const [first, last] = geometry.bars;
+  expect(first!.x + first!.width / 2).toBeLessThan(geometry.plot.x + geometry.plot.width / 2);
+  expect(last!.x + last!.width / 2).toBeGreaterThan(geometry.plot.x + geometry.plot.width / 2);
+  expect(last!.height / first!.height).toBeCloseTo(3, 1);
+});
+
+test('review: closed members identify their errors and global rate errors explain the cause', async ({ page }) => {
+  await completeDates(page);
+  await page.locator('#addMember').click();
+  await page.locator('[data-member="1"] > summary').click();
+  await expect(page.locator('[data-member="1"]')).not.toHaveAttribute('open', '');
+  await expect(page.locator('[data-error-marker="1"]')).toBeVisible();
+  await expect(page.locator('[data-error-marker="1"]')).toContainText('Chybné zadání');
+  await expect(page.locator('#summary')).toContainText('Osoba 2');
+  await expect(page.locator('#exportPdf')).toBeDisabled();
+  await page.locator('[data-member="1"] > summary').click();
+  await expect(page.locator('[data-warning="1"]')).toContainText('měsíc začátku důchodu');
+  await field(page, 'pensionStartMonth', '12', '1');
+  await expect(page.locator('[data-error-marker="1"]')).toBeHidden();
+  await expect(page.locator('#exportPdf')).toBeEnabled();
+  await field(page, 'investmentAccumulationRate', '31', 'global');
+  await expect(page.locator('#globalWarnings')).toBeVisible();
+  await expect(page.locator('#globalWarnings')).toContainText('Investice – spoření');
+  await expect(page.locator('#globalWarnings')).toContainText('nejvýše 30 %');
+  await expect(page.locator('#summary')).toContainText('výnosy produktů');
+  await field(page, 'investmentAccumulationRate', '10', 'global');
+  await expect(page.locator('#globalWarnings')).toBeHidden();
+  await expect(page.locator('#exportPdf')).toBeEnabled();
+});
+
 test('exports a complete real PDF, blocks concurrent exports and restores the view', async ({ page }, testInfo) => {
   await completeDates(page);
   await field(page, 'initialInvestment', '123456');

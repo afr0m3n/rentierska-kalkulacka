@@ -27,6 +27,8 @@ import {
 import { planCanvasSlices } from './pdf/pagination';
 import { reportHtml } from './pdf/report';
 import { parseStoredState, STORAGE_KEY, PREVIOUS_STORAGE_KEY, LEGACY_STORAGE_KEY, CONSENT_KEY } from './state/storage';
+import { editMemberNumber, type NumericMemberField } from './state/member-edit';
+import { chartAxisBounds } from './ui/chart-axis';
 
 Chart.register(...registerables);
 
@@ -137,13 +139,20 @@ function memberSummary(member: MemberInput): string {
   return `${excluded}${member.birthMonth ?? '?'}/${member.birthYear} · ${money(member.targetMonthlyRent)}/měs. od ${member.rentStartAge} let`;
 }
 
+function pensionYearHint(member: MemberInput): string {
+  return member.pensionYearSource === 'suggested'
+    ? `Navržený rok důchodu (věk ${member.pensionAge} let) se mění s rokem narození. Ruční změnou roku důchodu termín zachováte.`
+    : 'Rok důchodu je zadaný nebo převzatý z uložené kalkulace; změna narození jej neposune.';
+}
+
 function renderMembers(): void {
   element('members').innerHTML = state.members.map((member, index) => `
     <details class="member ${member.active ? '' : 'off'}" ${state.members.length === 1 ? 'open' : ''} data-member="${index}">
-      <summary><strong data-name="${index}">${escapeHtml(memberName(member, index))}</strong><span data-summary="${index}">${escapeHtml(memberSummary(member))}</span></summary>
+      <summary><strong data-name="${index}">${escapeHtml(memberName(member, index))}</strong><span data-summary="${index}">${escapeHtml(memberSummary(member))}</span><span class="error-marker" data-error-marker="${index}" hidden></span></summary>
       <div class="mbody">
         <label class="include"><input type="checkbox" data-owner="${index}" data-key="active" ${member.active ? 'checked' : ''} /> Zahrnout do modelace</label>
         ${MEMBER_GROUPS.map(({ title, fields }) => `<div class="mgroup"><h3>${escapeHtml(title)}</h3><div class="grid2">${fields.map((definition) => renderField(definition, member[definition.key], index)).join('')}</div></div>`).join('')}
+        <p class="hint" data-pension-hint="${index}">${escapeHtml(pensionYearHint(member))}</p>
         <div class="warn" data-warning="${index}" hidden></div>
         ${state.members.length > 1 ? `<button class="btn ghost" type="button" data-remove="${index}">Odebrat osobu</button>` : ''}
       </div>
@@ -201,10 +210,17 @@ element('members').addEventListener('input', (event) => {
   const key = input.dataset.key as keyof MemberInput | undefined;
   const index = Number(input.dataset.owner);
   if (!key || !Number.isInteger(index) || !state.members[index]) return;
-  const member = state.members[index];
+  let member = state.members[index];
   if (key === 'active') member.active = input.checked;
   else if (key === 'name') member.name = input.value;
-  else (member[key] as number) = input.value.trim() === '' ? Number.NaN : Number(input.value);
+  else if (key !== 'pensionYearSource') {
+    member = editMemberNumber(member, key as NumericMemberField, input.value.trim() === '' ? Number.NaN : Number(input.value));
+    state.members[index] = member;
+    const pensionYear = document.querySelector<HTMLInputElement>(`[data-owner="${index}"][data-key="pensionStartYear"]`);
+    if (key === 'birthYear' && pensionYear) pensionYear.value = Number.isFinite(member.pensionStartYear) ? String(member.pensionStartYear) : '';
+    const hint = document.querySelector<HTMLElement>(`[data-pension-hint="${index}"]`);
+    if (hint) hint.textContent = pensionYearHint(member);
+  }
   input.closest('.member')?.classList.toggle('off', !member.active);
   const name = document.querySelector<HTMLElement>(`[data-name="${index}"]`);
   const summary = document.querySelector<HTMLElement>(`[data-summary="${index}"]`);
@@ -455,9 +471,20 @@ function markValidationIssues(memberIssues: Map<number, ValidationIssue[]>, glob
   for (const issue of globalIssues) {
     document.querySelector<HTMLInputElement>(`[data-owner="global"][data-key="${issue.field}"]`)?.setAttribute('aria-invalid', 'true');
   }
+  const globalWarning = element('globalWarnings');
+  globalWarning.hidden = globalIssues.length === 0;
+  globalWarning.innerHTML = globalIssues.map((issue) => {
+    const label = GLOBAL_FIELDS.find((field) => field.key === issue.field)?.label ?? 'Státní příspěvek DPS';
+    return `<div>${escapeHtml(label)}: ${escapeHtml(issue.message)}</div>`;
+  }).join('');
   state.members.forEach((_, index) => {
     const warning = document.querySelector<HTMLElement>(`[data-warning="${index}"]`);
     const issues = memberIssues.get(index) ?? [];
+    const marker = document.querySelector<HTMLElement>(`[data-error-marker="${index}"]`);
+    if (marker) {
+      marker.hidden = issues.length === 0;
+      marker.textContent = issues.length ? `Chybné zadání (${issues.length})` : '';
+    }
     if (warning) {
       warning.hidden = issues.length === 0;
       warning.innerHTML = issues.length ? `<strong>Zkontrolujte zadání:</strong><ul>${issues.map((issue) => `<li>${escapeHtml(issue.message)}</li>`).join('')}</ul>` : '';
@@ -492,7 +519,9 @@ function computeResults(): void {
     const message = active.length === 0
       ? 'Zahrňte do modelace alespoň jednu osobu.'
       : 'Výsledky nejsou vypočteny, dokud neopravíte označená zadání.';
-    element('summary').innerHTML = `<div class="empty ${hasIssues ? 'status bad' : ''}">${message}</div>`;
+    const invalidMembers = active.filter(({ index }) => (memberIssues.get(index)?.length ?? 0) > 0);
+    const memberNames = invalidMembers.map(({ member, index }) => escapeHtml(memberName(member, index))).join(', ');
+    element('summary').innerHTML = `<div class="empty ${hasIssues ? 'status bad' : ''}">${message}${memberNames ? `<div>Chybné zadání: ${memberNames}. Otevřete označenou osobu a opravte uvedená pole.</div>` : ''}${globalIssues.length ? '<div>Zkontrolujte výnosy produktů; důvody jsou uvedeny u jejich zadání.</div>' : ''}</div>`;
     element('journeys').innerHTML = '';
     element('kpis').innerHTML = '';
     element<HTMLButtonElement>('exportPdf').disabled = true;
@@ -527,8 +556,7 @@ function computeResults(): void {
 }
 
 function renderCharts(view: ComputedMember[]): void {
-  const minimum = AS_OF_MONTH / 12;
-  const maximum = Math.max(...view.map(({ result }) => result.endMonth)) / 12;
+  const bounds = chartAxisBounds(AS_OF_MONTH, Math.max(...view.map(({ result }) => result.endMonth)));
   const months = [...new Set(view.flatMap(({ result }) => result.samples.map((sample) => sample.month)))].sort((a, b) => a - b);
   const investmentSeries: ChartPoint[] = [];
   const dpsSeries: ChartPoint[] = [];
@@ -555,7 +583,8 @@ function renderCharts(view: ComputedMember[]): void {
     (chart as typeof chart & { $strips?: typeof strips }).$strips = strips;
     (chart as typeof chart & { $shade?: Phase[] | null }).$shade = shade;
     chart.options.layout = { padding: { top: strips.length * ROW_HEIGHT + 10, right: 8 } };
-    if (chart.options.scales?.x) { chart.options.scales.x.min = minimum; chart.options.scales.x.max = maximum; }
+    const axis = chart === capitalChart ? bounds.capital : bounds.rent;
+    if (chart.options.scales?.x) { chart.options.scales.x.min = axis.min; chart.options.scales.x.max = axis.max; }
   }
   capitalChart.data.datasets[0]!.data = investmentSeries;
   capitalChart.data.datasets[1]!.data = dpsSeries;

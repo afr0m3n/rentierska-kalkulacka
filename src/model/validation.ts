@@ -5,6 +5,8 @@ import { calendarMonth } from './timeline';
 export const MAX_MONTHLY_AMOUNT = 1_000_000;
 export const MAX_CAPITAL_INPUT = 1_000_000_000;
 export const MAX_MODELED_BALANCE = 1e15;
+// Broad plausibility guard for this calculator, NOT a statutory pension age.
+export const MIN_MODELED_PENSION_AGE = 50;
 const MONTHLY_FIELDS = ['targetMonthlyRent', 'monthlyInvestment', 'monthlyDps', 'monthlyPension'] as const;
 const CAPITAL_FIELDS = ['initialInvestment', 'initialDps', 'oneTimeInvestment'] as const;
 const AGE_FIELDS = ['dpsDrawdownAge', 'rentStartAge', 'rentEndAge'] as const;
@@ -56,6 +58,7 @@ export function validateMember(member: MemberInput, asOfMonth: number): Validati
       const pension = calendarMonth(member.pensionStartYear, member.pensionStartMonth);
       if (pension >= end) issues.push({ field: 'pensionStartYear', message: 'Důchod začíná po konci modelace; upravte datum nebo nastavte částku na 0.' });
       if (pension < birth) issues.push({ field: 'pensionStartMonth', message: 'Důchod nesmí začínat před narozením.' });
+      if (pension < birth + MIN_MODELED_PENSION_AGE * 12) issues.push({ field: 'pensionStartYear', message: `Model kladného starobního důchodu podporuje začátek nejdříve od ${MIN_MODELED_PENSION_AGE} let. Jde o limit kalkulačky, nikoli potvrzení zákonného nároku.` });
     }
     if (member.oneTimeInvestment > 0) {
       const deposit = member.oneTimeInvestmentYear === currentYear ? asOfMonth : member.oneTimeInvestmentYear * 12;
