@@ -50,3 +50,45 @@ Kalkulačka proto není nástrojem pro právní posouzení nároku. Přepínač 
 - numerické řešení potřebné úložky a udržitelné renty;
 - neplatné věky, období, minulý jednorázový vklad a prázdný numerický vstup;
 - rozdělení vysokého PDF bloku mezi stránky bez ztráty pixelů.
+
+## Etapa 1.5 – opravy nezávislé revize
+
+Tato část nahrazuje popis aktuální implementace u relevantních nálezů výše; původní tabulka zachovává historii první etapy.
+
+| ID | Priorita / závažnost | Oprava a ověření |
+| --- | --- | --- |
+| B-01 | P1 / kritická | Potřebná úložka se zaokrouhluje nahoru, udržitelná renta dolů, navýšení nahoru. Řešiče po zaokrouhlení znovu simulují. Reference 1 000,25 Kč → úložka 1 001 Kč; 1 000,75 Kč → renta 1 000 Kč. |
+| B-02 | P1 / kritická | Veřejná simulace i řešiče validují scénář. Neplatné vstupy či numericky nepřiměřený kapitál vyvolají chybu; UI odstraní předchozí výsledky a zakáže PDF. Nedostupná úložka/kapitál používají `null`, nikoli `NaN` nebo `Infinity`. |
+| B-03 | P1 / vysoká | Narození má měsíc a rok, milníky nejsou fixované na leden. Důchod má nezávislý měsíc a rok. Referenční měsíc UI používá Europe/Prague; jádro má stále explicitní datum. |
+| B-04 | P1 / vysoká | Migrace v2/v3 zachovává vstupy. Chybějící měsíce jsou `null`; odvozený rok důchodu odpovídá starému ročníku + zadanému věku, měsíc se nedoplňuje. Načtení existujícího úložiště prohlížeče nezapíná automatické ukládání. |
+| B-05 | P2 / kritická | Plné výplaty DPS a důchodu jsou oddělené od pokrytí cíle. Každý měsíc obsahuje cílový příjem, skutečný příjem, použitou část DPS/důchodu, přebytek a schodek. Přebytek odchází mimo kapitál. Reference DPS 10 000 Kč / cíl 1 000 Kč → použito 1 000 Kč, přebytek 9 000 Kč. |
+| B-06 | P2 / vysoká | Domácnost agreguje měsíce na společné ose. Roční graf dělí součet 12, včetně neaktivních měsíců. Kapitál různých startů se nesčítá. Po konci osobní modelace je kapitál mimo graf; konečný zůstatek zůstává v osobním výsledku. |
+| B-07 | P3 / vysoká | PDF má vstupy každé osoby, narození, výnosy, přepínač a součet státní podpory, jednorázový vklad s termínem, oba počáteční zůstatky, všechny milníky i skutečné cash flow. Přiměřené tabulky se přesunou celé na další stránku. |
+| B-08 | P3 / střední | Fáze se označují DPS/důchod jen při skutečně kladné výplatě. Nulové produkty nevyvolají falešný nástup příjmu. |
+| B-09 | P3 / vysoká | Export používá synchronní zámek, po dobu práce zakáže ovládání a v `finally` vrací stav i view. Druhý export neproběhne. |
+| B-10 | P3 / vysoká | Vizuální kontrola skutečného PDF odhalila snímání grafu uprostřed aktualizace. Export nyní zastaví animaci, dokončí `update('none')` a teprve potom pořídí obrázek. Barvy datasetů jsou explicitní od inicializace; automatické přebarvování je vypnuté. Pixelové E2E kontrolují přítomnost sloupců v UI i reportu. |
+
+### Technické hranice a přesné významy
+
+- Měsíční částky: 0–1 000 000 Kč; kapitál/vklad: 0–1 000 000 000 Kč; věky: celé 0–120 let; výnos: více než −100 %, nejvýše 30 % nominální p.a. Jde o rozsah aplikace, nikoli zákonná omezení. Modelovaný zůstatek nad 10^15 Kč selže explicitně kvůli spolehlivosti numeriky.
+- Řešič udržitelné renty hledá do 1 000 000 Kč/měs.; hodnota na stropu je potvrzená udržitelnost do tohoto rozsahu, nikoli tvrzení o vyšším matematickém maximu. Řešič úložky vrací `null`, pokud cíl není dosažitelný úložkou v povoleném rozsahu nebo už není akumulační období.
+- Numerická tolerance celkového schodku je 10^-6 Kč, nikoli tolerování chybějící koruny renty.
+- Pro přiřazení příjmu na cíl se zachovává pořadí důchod → DPS → výběr investic. Jde o účetní přiřazení; neomezuje skutečně vyplacený důchod ani DPS. Přebytek se nikdy nepřenese do dalších měsíců.
+- Před rentou nemá scénář aktivní cílový příjem. Důchod vyplacený během spoření je příjem mimo cíl a není reinvestován. Již probíhající renta zůstává nepodporovaná.
+- Jednorázový vklad má stále jen rok: letošní rok znamená referenční měsíc, budoucí rok leden. UI i PDF to výslovně uvádějí; přesnější jednorázová časová osa je otevřená.
+- Konec období není zahrnut. Graf po tomto měsíci nesleduje zůstatek osoby, ale osobní KPI/PDF jej uvádí. Nejde o vyčerpání, ztrátu ani právní vypořádání.
+- DPS zůstává ilustrativní anuitní čerpání. Minimální věk 60 let je zachovaný filtr, ne potvrzení nároku; doba 1–60 let je technický rozsah, ne legislativní povolení všech těchto dob. Smluvní spořicí doba, předdůchod, daňové dopady a individuální nárok na podporu jsou otevřené (A-16/A-17/A-21). Etapa 1.5 nová legislativní pravidla nezavádí.
+- PDF je stále rastrový report; čitelnost se kontroluje vykreslením skutečných stránek, text není garantovaně vyhledatelný. Sémantické PDF a opakované hlavičky při extrémně dlouhých blocích zůstávají v roadmapě.
+
+### Otevřená rozhodnutí
+
+Inflace a nominální/reálná renta, valorizace, čistý výnos po poplatcích/daních, produktový a smluvní nárok DPS, individuální státní podpora, nezávislé fáze spoření, sdílený kapitál a další osud kapitálu po osobním horizontu vyžadují specifikaci. Souhrnné úložky a renty jsou výslovně součty osobních plánů v jejich vlastních obdobích, nikoli optimalizací společného portfolia.
+
+### Ověření etapy 1.5 (14. 10. 2026)
+
+- `npm ci`, `npm test` (48 testů), `npm run build` a `npm run test:e2e` (10 testů) úspěšné na Node.js 24.21.0.
+- E2E běží nad produkčním `dist/` s pevným referenčním datem, desktopovým a mobilním viewportem. Kontroluje i viditelné sloupce uvnitř canvasu a nulový horizontální přesah stránky.
+- Skutečný report s počáteční investicí 123 456 Kč a jednorázovým vkladem 654 321 Kč v roce 2030 byl stažen na desktopu i mobilu. Všechny tři stránky byly otevřeny/renderovány a ručně vizuálně zkontrolovány: vstupy, výsledky i oba grafy jsou čitelné; tabulky se nerozdělují uprostřed běžného bloku.
+- PDF, screenshoty a traces jsou pouze lokální syntetické testovací artefakty v ignorovaném `test-results/`. Žádné klientské údaje ani přihlašovací údaje se necommitují.
+- Chromium potřebovalo na tomto hostu knihovny rozbalené do izolovaného `/tmp` adresáře; nebylo použito sudo ani změny systémových balíčků.
+- Přidáno CI pro PR do `main`: Node.js 24 + instalace/test/build, `contents: read`, bez nasazování. Skutečný stav GitHub runu je potřeba posuzovat podle PR kontrol, ne podle lokálního běhu.
