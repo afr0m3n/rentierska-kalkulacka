@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ASSUMPTIONS,
   annuityDuePayment,
-  createDefaultMember,
+  createDefaultMember as defaultMember,
   simulate,
   solveRequiredMonthlyInvestment,
   solveSustainableMonthlyRent,
   stateContributionFor,
 } from '../src/model';
+
+const createDefaultMember = (year: number, overrides: Parameters<typeof defaultMember>[1] = {}) =>
+  defaultMember(year, { birthMonth: 1, pensionStartMonth: 1, monthlyPension: 0, ...overrides });
 
 const JANUARY_2026 = 2026 * 12;
 const zeroReturns = {

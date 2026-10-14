@@ -7,6 +7,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   test: {
+    include: ['tests/**/*.test.ts'],
     environment: 'node',
     coverage: {
       reporter: ['text', 'html'],

@@ -1,5 +1,9 @@
 # Roadmapa
 
+## Dokončená etapa 1.5
+
+Konzervativní celočíselné výsledky ověřené simulací, numerické hranice, měsíce narození/důchodu, migrace v2/v3, skutečné příjmy oddělené od cíle a přebytku, kalendářní agregace, kompletní uzamčený PDF export a browserové E2E desktop/mobile. Vývoj přes pracovní větve a PR; základní CI pro `main` bez nasazování.
+
 ## Etapa 2 – schválené finanční předpoklady
 
 1. Sepsat a produktově schválit význam cílové renty: nominální vs. reálná částka a její valorizace.
@@ -24,7 +28,7 @@
 
 ## Etapa 5 – kvalita výstupů
 
-1. Doplnit browserové end-to-end testy hlavních toků a vizuální regresní testy desktop/mobile.
+1. Rozšířit existující browserové E2E o další prohlížeče, dark mode a trvalé vizuální baseline; případně je přidat do CI.
 2. Zlepšit PDF na sémantické stránkování tabulek s opakováním hlaviček.
 3. Přidat export/import anonymizovaného JSON souboru jako alternativu k `localStorage`.
 4. Provést přístupnostní audit klávesnice, kontrastu, chybových hlášení a grafických alternativ.

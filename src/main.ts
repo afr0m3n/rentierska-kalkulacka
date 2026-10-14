@@ -10,6 +10,13 @@ import {
   solveSustainableMonthlyRent,
   validateAssumptions,
   validateMember,
+  currentPragueMonth,
+  formatMonth,
+  emptyDraw,
+  capitalAt,
+  annualDraws,
+  commonStartCapital as sharedStartCapital,
+  recommendedIncrease,
   type CalculatorState,
   type GlobalAssumptions,
   type MemberInput,
@@ -18,18 +25,20 @@ import {
   type ValidationIssue,
 } from './model';
 import { planCanvasSlices } from './pdf/pagination';
+import { reportHtml } from './pdf/report';
+import { parseStoredState, STORAGE_KEY, PREVIOUS_STORAGE_KEY, LEGACY_STORAGE_KEY, CONSENT_KEY } from './state/storage';
+import { editMemberNumber, type NumericMemberField } from './state/member-edit';
+import { chartAxisBounds } from './ui/chart-axis';
 
 Chart.register(...registerables);
 
 const now = new Date();
-const AS_OF_MONTH = now.getFullYear() * 12 + now.getMonth();
-const CURRENT_YEAR = now.getFullYear();
-const STORAGE_KEY = 'rentier-calculator-v3';
-const CONSENT_KEY = 'rentier-calculator-local-storage-consent';
+const AS_OF_MONTH = currentPragueMonth(now);
+const CURRENT_YEAR = Math.floor(AS_OF_MONTH / 12);
 const ROW_HEIGHT = 20;
 
 const numberFormatter = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 0 });
-const money = (value: number): string => `${numberFormatter.format(Math.round(value || 0))} Kč`;
+const money = (value: number | null): string => value === null || !Number.isFinite(value) ? '—' : `${numberFormatter.format(Math.round(value))} Kč`;
 const largeMoney = (value: number): string => Math.abs(value || 0) >= 1_000_000
   ? `${((value || 0) / 1_000_000).toLocaleString('cs-CZ', { maximumFractionDigits: 2 })} mil. Kč`
   : money(value);
@@ -49,30 +58,10 @@ const element = <T extends HTMLElement>(id: string): T => {
   return found as T;
 };
 
-function parseStoredState(raw: string | null): CalculatorState | null {
-  if (!raw) return null;
-  try {
-    const candidate = JSON.parse(raw) as Partial<CalculatorState>;
-    if (!candidate.assumptions || !Array.isArray(candidate.members) || candidate.members.length === 0) return null;
-    const defaults = createDefaultState(CURRENT_YEAR);
-    return {
-      ...defaults,
-      ...candidate,
-      assumptions: { ...defaults.assumptions, ...candidate.assumptions },
-      members: candidate.members.slice(0, 6).map((member) => ({
-        ...createDefaultMember(CURRENT_YEAR),
-        ...member,
-      })),
-    };
-  } catch {
-    return null;
-  }
-}
-
-let storageConsent = localStorage.getItem(CONSENT_KEY) === 'yes';
-let state = storageConsent
-  ? parseStoredState(localStorage.getItem(STORAGE_KEY)) ?? createDefaultState(CURRENT_YEAR)
-  : createDefaultState(CURRENT_YEAR);
+const readStorage = (key: string): string | null => { try { return localStorage.getItem(key); } catch { return null; } };
+let storageConsent = readStorage(CONSENT_KEY) === 'yes';
+let state: CalculatorState = parseStoredState(readStorage(STORAGE_KEY) ?? readStorage(PREVIOUS_STORAGE_KEY) ?? readStorage(LEGACY_STORAGE_KEY), CURRENT_YEAR) ?? createDefaultState(CURRENT_YEAR);
+let exportInProgress = false;
 
 function persistState(): void {
   if (!storageConsent) return;
@@ -106,7 +95,8 @@ const GLOBAL_FIELDS: Array<FieldDefinition<GlobalAssumptions>> = [
 const MEMBER_GROUPS: Array<{ title: string; fields: Array<FieldDefinition<MemberInput> & { text?: boolean }> }> = [
   { title: 'Základ', fields: [
     { key: 'name', label: 'Jméno', text: true },
-    { key: 'birthYear', label: 'Ročník', integer: true },
+    { key: 'birthYear', label: 'Rok narození', integer: true },
+    { key: 'birthMonth', label: 'Měsíc narození (1–12)', integer: true },
     { key: 'targetMonthlyRent', label: 'Požadovaná renta', suffix: 'Kč/měs.', wide: true },
   ] },
   { title: 'Investice', fields: [
@@ -124,7 +114,8 @@ const MEMBER_GROUPS: Array<{ title: string; fields: Array<FieldDefinition<Member
   { title: 'Čerpání renty', fields: [
     { key: 'rentStartAge', label: 'Renta od věku', suffix: 'let', integer: true },
     { key: 'rentEndAge', label: 'Čerpat do věku', suffix: 'let', integer: true },
-    { key: 'pensionAge', label: 'Státní důchod od', suffix: 'let', integer: true },
+    { key: 'pensionStartYear', label: 'Důchod od roku', integer: true },
+    { key: 'pensionStartMonth', label: 'Důchod od měsíce (1–12)', integer: true },
     { key: 'monthlyPension', label: 'Státní důchod', suffix: 'Kč/měs.' },
   ] },
 ];
@@ -133,7 +124,7 @@ function renderField<T>(definition: FieldDefinition<T> & { text?: boolean }, val
   const inputAttributes = definition.text
     ? 'type="text" placeholder="Jméno" autocomplete="off"'
     : `type="number" inputmode="decimal" step="${definition.integer ? '1' : 'any'}"`;
-  return `<label class="f ${definition.wide ? 'wide' : ''}"><span>${escapeHtml(definition.label)}</span><span class="in"><input ${inputAttributes} data-owner="${owner}" data-key="${String(definition.key)}" value="${escapeHtml(value)}" />${definition.suffix ? `<em>${escapeHtml(definition.suffix)}</em>` : ''}</span></label>`;
+  return `<label class="f ${definition.wide ? 'wide' : ''}"><span>${escapeHtml(definition.label)}</span><span class="in"><input ${inputAttributes} data-owner="${owner}" data-key="${String(definition.key)}" value="${value === null || (typeof value === 'number' && !Number.isFinite(value)) ? '' : escapeHtml(value)}" />${definition.suffix ? `<em>${escapeHtml(definition.suffix)}</em>` : ''}</span></label>`;
 }
 
 function renderGlobalInputs(): void {
@@ -145,16 +136,23 @@ function renderGlobalInputs(): void {
 
 function memberSummary(member: MemberInput): string {
   const excluded = member.active ? '' : 'vyřazeno z modelace · ';
-  return `${excluded}${member.birthYear} · ${money(member.targetMonthlyRent)}/měs. od ${member.rentStartAge} let`;
+  return `${excluded}${member.birthMonth ?? '?'}/${member.birthYear} · ${money(member.targetMonthlyRent)}/měs. od ${member.rentStartAge} let`;
+}
+
+function pensionYearHint(member: MemberInput): string {
+  return member.pensionYearSource === 'suggested'
+    ? `Navržený rok důchodu (věk ${member.pensionAge} let) se mění s rokem narození. Ruční změnou roku důchodu termín zachováte.`
+    : 'Rok důchodu je zadaný nebo převzatý z uložené kalkulace; změna narození jej neposune.';
 }
 
 function renderMembers(): void {
   element('members').innerHTML = state.members.map((member, index) => `
     <details class="member ${member.active ? '' : 'off'}" ${state.members.length === 1 ? 'open' : ''} data-member="${index}">
-      <summary><strong data-name="${index}">${escapeHtml(memberName(member, index))}</strong><span data-summary="${index}">${escapeHtml(memberSummary(member))}</span></summary>
+      <summary><strong data-name="${index}">${escapeHtml(memberName(member, index))}</strong><span data-summary="${index}">${escapeHtml(memberSummary(member))}</span><span class="error-marker" data-error-marker="${index}" hidden></span></summary>
       <div class="mbody">
         <label class="include"><input type="checkbox" data-owner="${index}" data-key="active" ${member.active ? 'checked' : ''} /> Zahrnout do modelace</label>
         ${MEMBER_GROUPS.map(({ title, fields }) => `<div class="mgroup"><h3>${escapeHtml(title)}</h3><div class="grid2">${fields.map((definition) => renderField(definition, member[definition.key], index)).join('')}</div></div>`).join('')}
+        <p class="hint" data-pension-hint="${index}">${escapeHtml(pensionYearHint(member))}</p>
         <div class="warn" data-warning="${index}" hidden></div>
         ${state.members.length > 1 ? `<button class="btn ghost" type="button" data-remove="${index}">Odebrat osobu</button>` : ''}
       </div>
@@ -187,6 +185,10 @@ function showMessage(message: string): void {
 let computeTimer: number | undefined;
 function scheduleCompute(): void {
   window.clearTimeout(computeTimer);
+  lastResults = [];
+  element<HTMLButtonElement>('exportPdf').disabled = true;
+  element('summary').innerHTML = '<div class="empty">Přepočítávám zadání…</div>';
+  element('journeys').innerHTML = ''; element('kpis').innerHTML = ''; clearCharts();
   computeTimer = window.setTimeout(compute, 120);
 }
 
@@ -208,10 +210,17 @@ element('members').addEventListener('input', (event) => {
   const key = input.dataset.key as keyof MemberInput | undefined;
   const index = Number(input.dataset.owner);
   if (!key || !Number.isInteger(index) || !state.members[index]) return;
-  const member = state.members[index];
+  let member = state.members[index];
   if (key === 'active') member.active = input.checked;
   else if (key === 'name') member.name = input.value;
-  else (member[key] as number) = input.value.trim() === '' ? Number.NaN : Number(input.value);
+  else if (key !== 'pensionYearSource') {
+    member = editMemberNumber(member, key as NumericMemberField, input.value.trim() === '' ? Number.NaN : Number(input.value));
+    state.members[index] = member;
+    const pensionYear = document.querySelector<HTMLInputElement>(`[data-owner="${index}"][data-key="pensionStartYear"]`);
+    if (key === 'birthYear' && pensionYear) pensionYear.value = Number.isFinite(member.pensionStartYear) ? String(member.pensionStartYear) : '';
+    const hint = document.querySelector<HTMLElement>(`[data-pension-hint="${index}"]`);
+    if (hint) hint.textContent = pensionYearHint(member);
+  }
   input.closest('.member')?.classList.toggle('off', !member.active);
   const name = document.querySelector<HTMLElement>(`[data-name="${index}"]`);
   const summary = document.querySelector<HTMLElement>(`[data-summary="${index}"]`);
@@ -236,6 +245,7 @@ element('addMember').addEventListener('click', () => {
   const reference = state.members[0];
   state.members.push(createDefaultMember(CURRENT_YEAR, {
     birthYear: reference?.birthYear ?? 1990,
+    birthMonth: reference?.birthMonth ?? null,
     rentStartAge: reference?.rentStartAge ?? 60,
     rentEndAge: reference?.rentEndAge ?? 85,
     targetMonthlyRent: 20_000,
@@ -270,13 +280,15 @@ element('saveDraft').addEventListener('change', (event) => {
   storageConsent = (event.target as HTMLInputElement).checked;
   if (storageConsent) persistState();
   else {
-    localStorage.removeItem(CONSENT_KEY);
-    localStorage.removeItem(STORAGE_KEY);
+    try { for (const key of [CONSENT_KEY, STORAGE_KEY, PREVIOUS_STORAGE_KEY, LEGACY_STORAGE_KEY]) localStorage.removeItem(key); }
+    catch { showMessage('Prohlížeč nedovoluje odstranit lokální data.'); return; }
     showMessage('Lokálně uložená kalkulace byla odstraněna.');
   }
 });
 element('newCalculation').addEventListener('click', () => {
   if (!window.confirm('Smazat zadané údaje a začít novou kalkulaci?')) return;
+  try { for (const key of [STORAGE_KEY, PREVIOUS_STORAGE_KEY, LEGACY_STORAGE_KEY]) localStorage.removeItem(key); }
+  catch { showMessage('Prohlížeč nedovoluje odstranit dříve uložené kalkulace.'); }
   const advisorName = state.advisorName;
   state = createDefaultState(CURRENT_YEAR);
   state.advisorName = advisorName;
@@ -291,11 +303,11 @@ type PhaseType = 'accumulation' | 'investment' | 'investment+dps' | 'investment+
 interface Phase { start: number; end: number; type: PhaseType; average?: MonthlyDraw }
 
 const PHASE_STRIP: Record<PhaseType, string> = {
-  accumulation: 'spoření', investment: 'investice', 'investment+dps': 'inv. + DPS',
-  'investment+pension': 'inv. + důchod', 'investment+dps+pension': 'inv. + DPS + důchod',
+  accumulation: 'spoření', investment: 'renta', 'investment+dps': 'renta + DPS',
+  'investment+pension': 'renta + důchod', 'investment+dps+pension': 'DPS + důchod',
 };
 const PHASE_TITLE: Record<PhaseType, string> = {
-  accumulation: 'Akumulace', investment: 'Start renty', 'investment+dps': 'Zapojení penzijka',
+  accumulation: 'Akumulace', investment: 'Čerpání renty', 'investment+dps': 'Zapojení penzijka',
   'investment+pension': 'Státní důchod', 'investment+dps+pension': 'Penzijko a důchod',
 };
 
@@ -318,8 +330,8 @@ function createPhases(result: SimulationResult): Phase[] {
     let type: PhaseType;
     if (start < result.rentStartMonth) type = 'accumulation';
     else {
-      const dps = start >= result.dpsDrawdownStartMonth && start < result.dpsDrawdownEndMonth;
-      const pension = start >= result.pensionStartMonth;
+      const dps = [...result.draws].some(([month, draw]) => month >= start && month < end && draw.dps > 0);
+      const pension = [...result.draws].some(([month, draw]) => month >= start && month < end && draw.pension > 0);
       type = `investment${dps ? '+dps' : ''}${pension ? '+pension' : ''}` as PhaseType;
     }
     const previous = phases.at(-1);
@@ -327,19 +339,16 @@ function createPhases(result: SimulationResult): Phase[] {
     else phases.push({ start, end, type });
   }
   for (const phase of phases) {
-    if (phase.type === 'accumulation') continue;
-    const total: MonthlyDraw = { investment: 0, dps: 0, pension: 0, shortfall: 0 };
+    const total = emptyDraw();
     let count = 0;
     for (let month = phase.start; month < phase.end; month += 1) {
       const draw = result.draws.get(month);
       if (!draw) continue;
       count += 1;
-      total.investment += draw.investment; total.dps += draw.dps; total.pension += draw.pension; total.shortfall += draw.shortfall;
+      for (const key of Object.keys(total) as Array<keyof MonthlyDraw>) total[key] += draw[key];
     }
-    phase.average = count === 0 ? total : {
-      investment: total.investment / count, dps: total.dps / count,
-      pension: total.pension / count, shortfall: total.shortfall / count,
-    };
+    phase.average = total;
+    if (count > 0) for (const key of Object.keys(total) as Array<keyof MonthlyDraw>) total[key] /= count;
   }
   return phases;
 }
@@ -348,9 +357,9 @@ interface ComputedMember {
   member: MemberInput;
   index: number;
   result: SimulationResult;
-  requiredInvestment: number;
+  requiredInvestment: number | null;
   sustainableRent: number;
-  requiredCapital: number;
+  requiredCapital: number | null;
   phases: Phase[];
 }
 
@@ -410,14 +419,15 @@ Chart.defaults.font.size = 12;
 
 function ageTitle(yearValue: number): string {
   const year = Math.floor(yearValue + 1e-6);
-  return `Rok ${year} · ${currentViewMembers.map((member, index) => `${memberName(member, index)} ${year - member.birthYear} let`).join(', ')}`;
+  const month = Math.round(yearValue * 12);
+  return `${formatMonth(month)} · ${currentViewMembers.map((member, index) => `${memberName(member, index)} ${Math.floor((month - (member.birthYear * 12 + (member.birthMonth ?? 1) - 1)) / 12)} let`).join(', ')}`;
 }
 
 function baseChartOptions(yTitle: string): any {
   return {
-    responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
+    responsive: true, maintainAspectRatio: false, animation: false,
     interaction: { mode: 'nearest', axis: 'x', intersect: false }, layout: { padding: { top: 30, right: 8 } },
-    plugins: { legend: { display: false }, tooltip: { callbacks: {
+    plugins: { colors: { enabled: false }, legend: { display: false }, tooltip: { callbacks: {
       title: (items: Array<{ parsed: { x: number } }>) => items.length ? ageTitle(items[0]?.parsed.x ?? 0) : '',
       label: (item: { dataset: { label?: string }; parsed: { y: number } }) => `${item.dataset.label}: ${money(item.parsed.y)}`,
     }, filter: (item: { parsed: { y: number } }) => item.parsed.y > .5 } },
@@ -428,12 +438,12 @@ function baseChartOptions(yTitle: string): any {
   };
 }
 
-type ChartPoint = { x: number; y: number };
+type ChartPoint = { x: number; y: number | null };
 
 const capitalChart = new Chart<'line', ChartPoint[]>(element<HTMLCanvasElement>('capitalChart'), {
   type: 'line', data: { datasets: [
-    { label: 'Investice', data: [], fill: 'origin', pointRadius: 0, borderWidth: 2, tension: .15 },
-    { label: 'Penzijko (DPS)', data: [], fill: '-1', pointRadius: 0, borderWidth: 2, tension: .15 },
+    { label: 'Investice', data: [], borderColor: cssVariable('--c-inv'), backgroundColor: `${cssVariable('--c-inv')}99`, fill: 'origin', pointRadius: 0, borderWidth: 2, tension: .15 },
+    { label: 'Penzijko (DPS)', data: [], borderColor: cssVariable('--c-dps'), backgroundColor: `${cssVariable('--c-dps')}99`, fill: '-1', pointRadius: 0, borderWidth: 2, tension: .15 },
   ] }, options: baseChartOptions('Kč'),
 });
 const rentOptions = baseChartOptions('Kč / měs.');
@@ -441,8 +451,8 @@ rentOptions.scales.x.stacked = true;
 rentOptions.plugins.tooltip.callbacks.title = (items: Array<{ parsed: { x: number } }>) => items.length ? ageTitle((items[0]?.parsed.x ?? .5) - .5) : '';
 const rentChart = new Chart<'bar', ChartPoint[]>(element<HTMLCanvasElement>('rentChart'), {
   type: 'bar', data: { datasets: [
-    { label: 'Investice', data: [] }, { label: 'Penzijko (DPS)', data: [] },
-    { label: 'Státní důchod', data: [] }, { label: 'Chybí', data: [] },
+    { label: 'Investice', data: [], backgroundColor: cssVariable('--c-inv') }, { label: 'Penzijko (DPS)', data: [], backgroundColor: cssVariable('--c-dps') },
+    { label: 'Státní důchod', data: [], backgroundColor: cssVariable('--c-pen') }, { label: 'Chybí', data: [], backgroundColor: cssVariable('--c-short') },
   ] }, options: rentOptions,
 });
 rentChart.data.datasets.forEach((dataset) => { dataset.barPercentage = 1; dataset.categoryPercentage = .86; });
@@ -452,7 +462,7 @@ function clearCharts(): void {
     chart.data.datasets.forEach((dataset) => { dataset.data = []; });
     (chart as typeof chart & { $strips?: unknown[] }).$strips = [];
     (chart as typeof chart & { $shade?: Phase[] | null }).$shade = null;
-    chart.update();
+    chart.stop(); chart.update('none');
   }
 }
 
@@ -461,9 +471,20 @@ function markValidationIssues(memberIssues: Map<number, ValidationIssue[]>, glob
   for (const issue of globalIssues) {
     document.querySelector<HTMLInputElement>(`[data-owner="global"][data-key="${issue.field}"]`)?.setAttribute('aria-invalid', 'true');
   }
+  const globalWarning = element('globalWarnings');
+  globalWarning.hidden = globalIssues.length === 0;
+  globalWarning.innerHTML = globalIssues.map((issue) => {
+    const label = GLOBAL_FIELDS.find((field) => field.key === issue.field)?.label ?? 'Státní příspěvek DPS';
+    return `<div>${escapeHtml(label)}: ${escapeHtml(issue.message)}</div>`;
+  }).join('');
   state.members.forEach((_, index) => {
     const warning = document.querySelector<HTMLElement>(`[data-warning="${index}"]`);
     const issues = memberIssues.get(index) ?? [];
+    const marker = document.querySelector<HTMLElement>(`[data-error-marker="${index}"]`);
+    if (marker) {
+      marker.hidden = issues.length === 0;
+      marker.textContent = issues.length ? `Chybné zadání (${issues.length})` : '';
+    }
     if (warning) {
       warning.hidden = issues.length === 0;
       warning.innerHTML = issues.length ? `<strong>Zkontrolujte zadání:</strong><ul>${issues.map((issue) => `<li>${escapeHtml(issue.message)}</li>`).join('')}</ul>` : '';
@@ -474,16 +495,18 @@ function markValidationIssues(memberIssues: Map<number, ValidationIssue[]>, glob
   });
 }
 
-function valueAt(samples: SimulationResult['samples'], monthValue: number): SimulationResult['samples'][number] {
-  let value = samples[0] ?? { month: monthValue, investment: 0, dps: 0 };
-  for (const sample of samples) {
-    if (sample.month <= monthValue) value = sample;
-    else break;
+function compute(): void {
+  if (exportInProgress) return;
+  try { computeResults(); }
+  catch (error) {
+    lastResults = []; clearCharts();
+    element('journeys').innerHTML = ''; element('kpis').innerHTML = '';
+    element('summary').innerHTML = `<div class="empty status bad">Výpočet není dostupný: ${escapeHtml(error instanceof Error ? error.message : 'Neplatné zadání.')}</div>`;
+    element<HTMLButtonElement>('exportPdf').disabled = true;
   }
-  return value;
 }
 
-function compute(): void {
+function computeResults(): void {
   persistState();
   const active = state.members.map((member, index) => ({ member, index })).filter(({ member }) => member.active);
   const globalIssues = validateAssumptions(state.assumptions);
@@ -496,7 +519,9 @@ function compute(): void {
     const message = active.length === 0
       ? 'Zahrňte do modelace alespoň jednu osobu.'
       : 'Výsledky nejsou vypočteny, dokud neopravíte označená zadání.';
-    element('summary').innerHTML = `<div class="empty ${hasIssues ? 'status bad' : ''}">${message}</div>`;
+    const invalidMembers = active.filter(({ index }) => (memberIssues.get(index)?.length ?? 0) > 0);
+    const memberNames = invalidMembers.map(({ member, index }) => escapeHtml(memberName(member, index))).join(', ');
+    element('summary').innerHTML = `<div class="empty ${hasIssues ? 'status bad' : ''}">${message}${memberNames ? `<div>Chybné zadání: ${memberNames}. Otevřete označenou osobu a opravte uvedená pole.</div>` : ''}${globalIssues.length ? '<div>Zkontrolujte výnosy produktů; důvody jsou uvedeny u jejich zadání.</div>' : ''}</div>`;
     element('journeys').innerHTML = '';
     element('kpis').innerHTML = '';
     element<HTMLButtonElement>('exportPdf').disabled = true;
@@ -510,14 +535,14 @@ function compute(): void {
     const result = simulate(member, state.assumptions, AS_OF_MONTH);
     const requiredInvestment = solveRequiredMonthlyInvestment(member, state.assumptions, AS_OF_MONTH);
     const sustainableRent = solveSustainableMonthlyRent(member, state.assumptions, AS_OF_MONTH);
-    const requiredSimulation = Number.isFinite(requiredInvestment)
+    const requiredSimulation = requiredInvestment !== null
       ? simulate(member, state.assumptions, AS_OF_MONTH, { monthlyInvestment: requiredInvestment })
       : null;
     return {
       member: { ...member, name: memberName(member, index) }, index, result, requiredInvestment, sustainableRent,
       requiredCapital: requiredSimulation
         ? requiredSimulation.capitalAtRentStart.investment + requiredSimulation.capitalAtRentStart.dps
-        : Number.NaN,
+        : null,
       phases: createPhases(result),
     };
   });
@@ -531,39 +556,26 @@ function compute(): void {
 }
 
 function renderCharts(view: ComputedMember[]): void {
-  const minimum = AS_OF_MONTH / 12;
-  const maximum = Math.max(...view.map(({ result }) => result.endMonth)) / 12;
+  const bounds = chartAxisBounds(AS_OF_MONTH, Math.max(...view.map(({ result }) => result.endMonth)));
   const months = [...new Set(view.flatMap(({ result }) => result.samples.map((sample) => sample.month)))].sort((a, b) => a - b);
-  const investmentSeries: Array<{ x: number; y: number }> = [];
-  const dpsSeries: Array<{ x: number; y: number }> = [];
+  const investmentSeries: ChartPoint[] = [];
+  const dpsSeries: ChartPoint[] = [];
   for (const month of months) {
     let investment = 0; let dps = 0;
     for (const { result } of view) {
-      const value = valueAt(result.samples, month);
-      investment += value.investment; dps += value.dps;
+      const value = capitalAt(result, month);
+      if (value) { investment += value.investment; dps += value.dps; }
     }
-    investmentSeries.push({ x: month / 12, y: Math.max(0, investment) });
-    dpsSeries.push({ x: month / 12, y: Math.max(0, dps) });
+    const hasActive = view.some(({ result }) => capitalAt(result, month) !== null);
+    investmentSeries.push({ x: month / 12, y: hasActive ? Math.max(0, investment) : null });
+    dpsSeries.push({ x: month / 12, y: hasActive ? Math.max(0, dps) : null });
   }
 
-  const monthly = new Map<number, MonthlyDraw>();
-  for (const { result } of view) result.draws.forEach((draw, month) => {
-    const total = monthly.get(month) ?? { investment: 0, dps: 0, pension: 0, shortfall: 0 };
-    total.investment += draw.investment; total.dps += draw.dps; total.pension += draw.pension; total.shortfall += draw.shortfall;
-    monthly.set(month, total);
-  });
-  const annual = new Map<number, MonthlyDraw & { count: number }>();
-  monthly.forEach((draw, month) => {
-    const year = Math.floor(month / 12);
-    const total = annual.get(year) ?? { investment: 0, dps: 0, pension: 0, shortfall: 0, count: 0 };
-    total.investment += draw.investment; total.dps += draw.dps; total.pension += draw.pension; total.shortfall += draw.shortfall; total.count += 1;
-    annual.set(year, total);
-  });
+  const annual = annualDraws(view.map(({ result }) => result));
   const years = [...annual.keys()].sort((a, b) => a - b);
-  const rentSeries = (['investment', 'dps', 'pension', 'shortfall'] as const).map((key) => years.map((year) => {
-    const value = annual.get(year);
-    return { x: year + .5, y: value ? value[key] / value.count : 0 };
-  }));
+  const rentSeries = (['investment', 'dps', 'pension', 'shortfall'] as const).map((key) => years.map((year) => ({
+    x: year + .5, y: annual.get(year)?.[key] ?? 0,
+  })));
   const strips = view.map(({ member, phases }) => ({ name: member.name, phases }));
   const shade = view.length === 1 ? view[0]?.phases ?? null : null;
   const colors = [cssVariable('--c-inv'), cssVariable('--c-dps'), cssVariable('--c-pen'), cssVariable('--c-short')];
@@ -571,29 +583,28 @@ function renderCharts(view: ComputedMember[]): void {
     (chart as typeof chart & { $strips?: typeof strips }).$strips = strips;
     (chart as typeof chart & { $shade?: Phase[] | null }).$shade = shade;
     chart.options.layout = { padding: { top: strips.length * ROW_HEIGHT + 10, right: 8 } };
-    if (chart.options.scales?.x) { chart.options.scales.x.min = minimum; chart.options.scales.x.max = maximum; }
+    const axis = chart === capitalChart ? bounds.capital : bounds.rent;
+    if (chart.options.scales?.x) { chart.options.scales.x.min = axis.min; chart.options.scales.x.max = axis.max; }
   }
   capitalChart.data.datasets[0]!.data = investmentSeries;
   capitalChart.data.datasets[1]!.data = dpsSeries;
   capitalChart.data.datasets[0]!.borderColor = colors[0]; capitalChart.data.datasets[0]!.backgroundColor = `${colors[0]}99`;
   capitalChart.data.datasets[1]!.borderColor = colors[1]; capitalChart.data.datasets[1]!.backgroundColor = `${colors[1]}99`;
-  capitalChart.update();
+  capitalChart.stop(); capitalChart.update('none');
   rentSeries.forEach((series, index) => { rentChart.data.datasets[index]!.data = series; rentChart.data.datasets[index]!.backgroundColor = colors[index]; });
-  rentChart.update();
+  rentChart.stop(); rentChart.update('none');
 }
 
 function commonStartCapital(results: ComputedMember[]): number | null {
-  const starts = new Set(results.map(({ result }) => result.rentStartMonth));
-  if (starts.size !== 1) return null;
-  return results.reduce((sum, { result }) => sum + result.capitalAtRentStart.investment + result.capitalAtRentStart.dps, 0);
+  return sharedStartCapital(results.map(({ result }) => result));
 }
 
 function renderSummary(results: ComputedMember[]): void {
   const target = results.reduce((sum, { member }) => sum + member.targetMonthlyRent, 0);
   const saving = results.reduce((sum, { member }) => sum + member.monthlyInvestment + member.monthlyDps, 0);
   const oneTime = results.reduce((sum, { member }) => sum + member.oneTimeInvestment, 0);
-  const allSolvable = results.every(({ requiredInvestment }) => Number.isFinite(requiredInvestment));
-  const required = results.reduce((sum, { member, requiredInvestment }) => sum + (Number.isFinite(requiredInvestment) ? requiredInvestment : 0) + member.monthlyDps, 0);
+  const allSolvable = results.every(({ requiredInvestment }) => requiredInvestment !== null);
+  const required = results.reduce((sum, { member, requiredInvestment }) => sum + (requiredInvestment !== null ? requiredInvestment : 0) + member.monthlyDps, 0);
   const sustainable = results.reduce((sum, { sustainableRent }) => sum + sustainableRent, 0);
   const capital = commonStartCapital(results);
   const short = results.filter(({ result }) => result.totalShortfall > SHORTFALL_TOLERANCE);
@@ -601,11 +612,11 @@ function renderSummary(results: ComputedMember[]): void {
     ? `<div class="status ok">Plán vychází: při současném spoření pokryjete rentu ${money(target)}/měs. po celou zvolenou dobu čerpání.</div>`
     : `<div class="status bad">Při současném spoření renta nevystačí – kapitál dojde: ${short.map(({ member, result }) => `${escapeHtml(member.name)} od ${Math.floor(((result.depletedAt ?? result.endMonth) - result.birthMonth) / 12)} let`).join(', ')}.</div>`;
   element('summary').innerHTML = `
-    <div><div class="k">Cílová renta domácnosti</div><div class="v">${money(target)}</div><div class="s">měsíčně</div></div>
+    <div><div class="k">Součet osobních cílových rent</div><div class="v">${money(target)}</div><div class="s">každá ve vlastním období čerpání</div></div>
     <div><div class="k">Odkládáte celkem</div><div class="v">${money(saving)}</div><div class="s">měsíčně${oneTime ? ` + ${largeMoney(oneTime)} jednorázově` : ''}</div></div>
     <div><div class="k">Potřebná úložka pro cíl</div><div class="v">${allSolvable ? money(required) : '—'}</div><div class="s">investice + DPS měsíčně</div></div>
-    <div><div class="k">Udržitelná renta</div><div class="v">${money(sustainable)}</div><div class="s">při současném spoření</div></div>
-    <div><div class="k">Kapitál na startu renty</div><div class="v">${capital === null ? '—' : largeMoney(capital)}</div><div class="s">${capital === null ? 'nelze sčítat: osoby začínají v různých letech' : 'součet ve společném měsíci startu'}</div></div>
+    <div><div class="k">Součet osobních udržitelných rent</div><div class="v">${money(sustainable)}</div><div class="s">bez sdílení portfolií</div></div>
+    <div><div class="k">Kapitál na startu renty</div><div class="v">${capital === null ? '—' : largeMoney(capital)}</div><div class="s">${capital === null ? 'nelze sčítat: osoby začínají v různých termínech' : 'součet ve společném měsíci startu'}</div></div>
     ${status}`;
 }
 
@@ -613,7 +624,7 @@ function phasePeriod(phase: Phase, result: SimulationResult): string {
   const startAge = Math.floor((phase.start - result.birthMonth) / 12);
   const endAge = Math.round((phase.end - result.birthMonth) / 12);
   const years = Math.round((phase.end - phase.start) / 12 * 10) / 10;
-  return `${startAge}–${endAge} let · ${Math.floor(phase.start / 12)}–${Math.floor(phase.end / 12)} · ${String(years).replace('.', ',')} let`;
+  return `${startAge}–${endAge} let · ${formatMonth(phase.start)}–${formatMonth(phase.end)} · ${String(years).replace('.', ',')} let`;
 }
 
 function renderJourneys(view: ComputedMember[]): void {
@@ -626,12 +637,16 @@ function renderJourneys(view: ComputedMember[]): void {
           ${member.initialInvestment ? `<li><span><i class="dot legend-inv"></i>Dnešní hodnota</span><b>${money(member.initialInvestment)}</b></li>` : ''}
           ${member.oneTimeInvestment ? `<li><span><i class="dot legend-inv"></i>Jednorázově ${member.oneTimeInvestmentYear}</span><b>${money(member.oneTimeInvestment)}</b></li>` : ''}
           <li><span><i class="dot legend-dps"></i>DPS${result.monthlyStateContribution ? ` + stát až ${money(result.monthlyStateContribution)}` : ''}</span><b>${money(member.monthlyDps)}/měs.</b></li>
+          ${phase.average && phase.average.pension > 0 ? `<li><span>Důchod před rentou (průměr)</span><b>${money(phase.average.pension)}/měs.</b></li><li><span>Příjem mimo cíl (nereinvestován)</span><b>${money(phase.average.surplus)}/měs.</b></li>` : ''}
           <li><span>Na startu renty</span><b>${largeMoney(capital)}</b></li>`;
       } else {
-        const average = phase.average ?? { investment: 0, dps: 0, pension: 0, shortfall: 0 };
+        const average = phase.average ?? emptyDraw();
         rows = (average.investment > .5 ? `<li><span><i class="dot legend-inv"></i>Investice</span><b>${money(average.investment)}</b></li>` : '')
-          + (average.dps > .5 ? `<li><span><i class="dot legend-dps"></i>Penzijko</span><b>${money(average.dps)}</b></li>` : '')
-          + (average.pension > .5 ? `<li><span><i class="dot legend-pen"></i>Státní důchod</span><b>${money(average.pension)}</b></li>` : '')
+          + (average.dps > .5 ? `<li><span><i class="dot legend-dps"></i>Vyplacené DPS</span><b>${money(average.dps)}</b></li><li><span>z DPS na cíl</span><b>${money(average.dpsUsed)}</b></li>` : '')
+          + (average.pension > .5 ? `<li><span><i class="dot legend-pen"></i>Vyplacený důchod</span><b>${money(average.pension)}</b></li><li><span>z důchodu na cíl</span><b>${money(average.pensionUsed)}</b></li>` : '')
+          + `<li><span>Skutečný příjem</span><b>${money(average.actualIncome)}</b></li>`
+          + (average.surplus > .5 ? `<li><span>Přebytek nad cílem</span><b>${money(average.surplus)}</b></li>` : '')
+          + `<li><span>Pokrytí cíle</span><b>${money(average.covered)}</b></li>`
           + (average.shortfall > .5 ? `<li class="short"><span><i class="dot legend-short"></i>Chybí</span><b>${money(average.shortfall)}</b></li>` : '');
       }
       return `<div class="seg" style="border-top-color:var(${phaseColor(phase.type)});flex-grow:${Math.max(1, (phase.end - phase.start) / 12)}"><h4>${PHASE_TITLE[phase.type]}</h4><div class="when">${phasePeriod(phase, result)}</div><ul>${rows}</ul></div>`;
@@ -644,17 +659,17 @@ function renderKpis(results: ComputedMember[]): void {
   element('kpis').innerHTML = results.map(({ member, result, requiredInvestment, sustainableRent, requiredCapital }) => {
     const capital = result.capitalAtRentStart.investment + result.capitalAtRentStart.dps;
     const covered = result.totalShortfall <= SHORTFALL_TOLERANCE;
-    const requiredText = Number.isNaN(requiredInvestment) ? '—' : !Number.isFinite(requiredInvestment) ? 'nedosažitelné' : requiredInvestment === 0 ? '0 Kč (pokryto)' : `${money(requiredInvestment)}/měs.`;
+    const requiredText = requiredInvestment === null ? 'nedosažitelné v rozsahu modelu' : requiredInvestment === 0 ? '0 Kč (pokryto)' : `${money(requiredInvestment)}/měs.`;
     const lasts = covered
       ? `do ${member.rentEndAge} let, zůstane ${largeMoney(result.endingInvestment + result.endingDps)}`
       : `do ${Math.floor(((result.depletedAt ?? result.endMonth) - result.birthMonth) / 12)} let`;
     const verdict = covered
-      ? requiredInvestment === 0 ? 'Dnešní kapitál a DPS stačí samy; pravidelná investice není nutná.' : `Rezerva oproti potřebné úložce: ${money(member.monthlyInvestment - requiredInvestment)}/měs.`
-      : Number.isFinite(requiredInvestment) ? `Pro cíl navyšte investice o ${money(Math.max(0, requiredInvestment - member.monthlyInvestment))}/měs., nebo počítejte s rentou ${money(sustainableRent)}/měs.` : 'Cíl nelze při zadaném období dosáhnout.';
-    return `<article class="kcard"><h3>${escapeHtml(member.name)} <span style="font-weight:500;color:var(--muted);font-size:13px">${CURRENT_YEAR - member.birthYear} let</span></h3><dl>
+      ? requiredInvestment === 0 ? 'Dnešní kapitál a DPS stačí samy; pravidelná investice není nutná.' : `Rezerva oproti potřebné úložce: ${money(member.monthlyInvestment - (requiredInvestment ?? 0))}/měs.`
+      : requiredInvestment !== null ? `Pro cíl navyšte investice o ${money(recommendedIncrease(member.monthlyInvestment, requiredInvestment))}/měs., nebo počítejte s rentou ${money(sustainableRent)}/měs.` : 'Cíl nelze při zadaném období dosáhnout.';
+    return `<article class="kcard"><h3>${escapeHtml(member.name)} <span style="font-weight:500;color:var(--muted);font-size:13px">${Math.floor((AS_OF_MONTH - result.birthMonth) / 12)} let</span></h3><dl>
       <dt>Spoření do startu renty</dt><dd>${Math.max(0, Math.round((result.rentStartMonth - AS_OF_MONTH) / 12 * 10) / 10).toLocaleString('cs-CZ')} let</dd>
       <dt>Kapitál na startu renty</dt><dd>${largeMoney(capital)}</dd><dt>z toho DPS</dt><dd>${largeMoney(result.capitalAtRentStart.dps)}</dd>
-      <dt>Potřebný kapitál pro cíl</dt><dd>${Number.isFinite(requiredCapital) ? largeMoney(Math.max(requiredCapital, 0)) : '—'}</dd>
+      <dt>Potřebný kapitál pro cíl</dt><dd>${requiredCapital !== null ? largeMoney(Math.max(requiredCapital, 0)) : '—'}</dd>
       <dt>Potřebná úložka do investic</dt><dd class="${covered ? 'ok' : 'bad'}">${requiredText}</dd>
       <dt>Vaše úložka do investic</dt><dd>${money(member.monthlyInvestment)}/měs.</dd><dt>Udržitelná renta</dt><dd>${money(sustainableRent)}/měs.</dd>
       <dt>Peníze vystačí</dt><dd class="${covered ? 'ok' : 'bad'}">${lasts}</dd>
@@ -664,34 +679,14 @@ function renderKpis(results: ComputedMember[]): void {
   }).join('');
 }
 
-const PDF_COLORS = { investment: '#6fae2a', dps: '#2f6db5', pension: '#d9962b', shortfall: '#c64036' };
 const slug = (value: string): string => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const nextFrame = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
-function reportHtml(results: ComputedMember[], capitalImage: string, rentImage: string): string {
-  const target = results.reduce((sum, { member }) => sum + member.targetMonthlyRent, 0);
-  const saving = results.reduce((sum, { member }) => sum + member.monthlyInvestment + member.monthlyDps, 0);
-  const sustainable = results.reduce((sum, { sustainableRent }) => sum + sustainableRent, 0);
-  const capital = commonStartCapital(results);
-  const statusOk = results.every(({ result }) => result.totalShortfall <= SHORTFALL_TOLERANCE);
-  const legend = `<div class="rleg"><span><i style="background:${PDF_COLORS.investment}"></i>Investice</span><span><i style="background:${PDF_COLORS.dps}"></i>DPS</span><span><i style="background:${PDF_COLORS.pension}"></i>Státní důchod</span><span><i style="background:${PDF_COLORS.shortfall}"></i>Chybí</span></div>`;
-  return `<div class="blk"><div class="rhead"><div><h1>Rentiérská kalkulace</h1><div>Spoření, čerpání renty a státní důchod</div></div><div class="meta"><b>${escapeHtml(state.clientName || 'Klient')}</b>${state.advisorName ? `Zpracoval: ${escapeHtml(state.advisorName)}<br />` : ''}Datum: ${new Date().toLocaleDateString('cs-CZ')}</div></div>
-    <div class="rp"><div class="rsum"><div><div class="k">Cílová renta</div><div class="v">${money(target)}/měs.</div></div><div><div class="k">Odkládáte</div><div class="v">${money(saving)}/měs.</div></div><div><div class="k">Udržitelná renta</div><div class="v">${money(sustainable)}/měs.</div></div><div><div class="k">Kapitál na startu</div><div class="v">${capital === null ? 'Různá data startu' : largeMoney(capital)}</div></div><div><div class="k">Výnosy investic</div><div class="v" style="font-size:13px">${state.assumptions.investmentAccumulationRate} % / ${state.assumptions.investmentDrawdownRate} %</div></div><div><div class="k">Výnosy DPS</div><div class="v" style="font-size:13px">${state.assumptions.dpsAccumulationRate} % / ${state.assumptions.dpsDrawdownRate} %</div></div><div class="rstatus" style="color:${statusOk ? '#3e8a1e' : '#b8362d'}">${statusOk ? 'Plán vychází po celou zvolenou dobu.' : 'U nejméně jedné osoby vzniká nedostatek kapitálu.'}</div></div></div></div>
-    <div class="blk rp"><h2>Zadání</h2><table><tr><th>Osoba</th><th>Ročník</th><th>Renta</th><th>Investice</th><th>DPS</th><th>Čerpání</th><th>Důchod</th></tr>${results.map(({ member }) => `<tr><td><b>${escapeHtml(member.name)}</b></td><td>${member.birthYear}</td><td class="n">${money(member.targetMonthlyRent)}</td><td class="n">${money(member.monthlyInvestment)}/měs.<br />dnes ${money(member.initialInvestment)}</td><td class="n">${money(member.monthlyDps)}/měs.<br />dnes ${money(member.initialDps)}</td><td>${member.rentStartAge}–${member.rentEndAge} let<br />DPS ${member.dpsDrawdownAge}–${member.dpsDrawdownAge + member.dpsDrawdownYears} let</td><td class="n">${money(member.monthlyPension)}<br />od ${member.pensionAge} let</td></tr>`).join('')}</table></div>
-    <div class="blk rp"><h2>Cesta kapitálu</h2><img src="${capitalImage}" alt="" /></div>
-    <div class="blk rp"><h2>Z čeho se renta platí</h2>${legend}<img src="${rentImage}" alt="" /></div>
-    <div class="blk rp"><h2>Výsledky po osobách</h2><table><tr><th>Ukazatel</th>${results.map(({ member }) => `<th>${escapeHtml(member.name)}</th>`).join('')}</tr>
-      ${[
-        ['Kapitál na startu renty', (item: ComputedMember) => largeMoney(item.result.capitalAtRentStart.investment + item.result.capitalAtRentStart.dps)],
-        ['Potřebná úložka do investic', (item: ComputedMember) => Number.isFinite(item.requiredInvestment) ? `${money(item.requiredInvestment)}/měs.` : '—'],
-        ['Udržitelná renta', (item: ComputedMember) => `${money(item.sustainableRent)}/měs.`],
-        ['Zůstatek na konci', (item: ComputedMember) => largeMoney(item.result.endingInvestment + item.result.endingDps)],
-      ].map(([label, format]) => `<tr><td>${label as string}</td>${results.map((item) => `<td class="n">${(format as (item: ComputedMember) => string)(item)}</td>`).join('')}</tr>`).join('')}</table>
-      <p class="rnote">Orientační model. Výnos je nominální p.a. dělený 12; vklady a výběry probíhají na začátku měsíce. Bez inflace, poplatků a daní. Nárok na DPS a státní příspěvek je nutné ověřit individuálně.</p></div>`;
-}
-
 async function addCanvasBlock(pdf: JsPdfDocument, canvas: HTMLCanvasElement, currentY: number): Promise<number> {
   const pageWidth = 595.28; const pageHeight = 841.89; const margin = 22; const pointsPerCssPixel = pageWidth / 794; const scale = 2;
+  const blockHeight = canvas.height / scale * pointsPerCssPixel;
+  const usableHeight = pageHeight - margin * 2 - 12;
+  if (blockHeight <= usableHeight && currentY + blockHeight > pageHeight - margin - 12) { pdf.addPage(); currentY = margin; }
   const slices = planCanvasSlices(canvas.height, scale, pointsPerCssPixel, pageHeight, margin, margin + 12, currentY);
   let relativePage = 0; let finalY = currentY;
   for (const slice of slices) {
@@ -706,19 +701,29 @@ async function addCanvasBlock(pdf: JsPdfDocument, canvas: HTMLCanvasElement, cur
 }
 
 async function exportPdf(): Promise<void> {
-  const button = element<HTMLButtonElement>('exportPdf');
+  if (exportInProgress) return;
+  window.clearTimeout(computeTimer);
+  compute();
+  if (!lastResults.length) { showMessage('Nejprve opravte zadání.'); return; }
+  exportInProgress = true;
+  const controls = [...document.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')].map((control) => ({ control, disabled: control.disabled }));
+  controls.forEach(({ control }) => { control.disabled = true; });
   const previousTheme = document.documentElement.getAttribute('data-theme');
   const previousView = state.selectedView;
-  button.disabled = true; showMessage('Připravuji PDF…');
+  const report = element('report');
+  showMessage('Připravuji PDF…');
   try {
     await document.fonts?.ready;
     const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')]);
-    document.documentElement.setAttribute('data-theme', 'light'); state.selectedView = 'all'; compute();
-    if (!lastResults.length) { showMessage('Nejprve opravte zadání.'); return; }
-    [capitalChart, rentChart].forEach((chart) => { chart.options.animation = false; chart.options.devicePixelRatio = 2; });
-    capitalChart.resize(714, 340); rentChart.resize(714, 290); await nextFrame();
-    const report = element('report');
-    report.innerHTML = reportHtml(lastResults, capitalChart.toBase64Image('image/png', 1), rentChart.toBase64Image('image/png', 1));
+    document.documentElement.setAttribute('data-theme', 'light');
+    state.selectedView = 'all';
+    currentViewMembers = lastResults.map(({ member }) => member);
+    [capitalChart, rentChart].forEach((chart) => { chart.stop(); chart.options.animation = false; chart.options.responsive = false; chart.options.devicePixelRatio = 2; });
+    renderCharts(lastResults);
+    capitalChart.resize(714, 340); rentChart.resize(714, 290);
+    [capitalChart, rentChart].forEach((chart) => { chart.stop(); chart.update('none'); });
+    await nextFrame();
+    report.innerHTML = reportHtml(state, lastResults, AS_OF_MONTH, capitalChart.toBase64Image('image/png', 1), rentChart.toBase64Image('image/png', 1));
     await Promise.all([...report.querySelectorAll('img')].map((image) => image.complete ? Promise.resolve() : new Promise<void>((resolve) => { image.onload = () => resolve(); image.onerror = () => resolve(); })));
     const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
     let y = 0;
@@ -729,15 +734,18 @@ async function exportPdf(): Promise<void> {
     const pageCount = pdf.getNumberOfPages();
     for (let page = 1; page <= pageCount; page += 1) { pdf.setPage(page); pdf.setFontSize(8); pdf.setTextColor(120); pdf.text(`${page} / ${pageCount}`, 555, 827); }
     pdf.save(`Rentierska-kalkulace${state.clientName ? `-${slug(state.clientName)}` : ''}.pdf`);
-    report.innerHTML = ''; showMessage('PDF staženo.');
+    showMessage('PDF staženo.');
   } catch (error) {
     console.error(error); showMessage('Export PDF selhal. Zkuste to prosím znovu.');
   } finally {
+    report.innerHTML = '';
     if (previousTheme === null) document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', previousTheme);
     state.selectedView = previousView;
-    [capitalChart, rentChart].forEach((chart) => { chart.options.animation = { duration: 250 }; chart.options.devicePixelRatio = undefined; chart.resize(); });
-    renderViewbar(); compute(); button.disabled = false;
+    [capitalChart, rentChart].forEach((chart) => { chart.options.animation = false; chart.options.responsive = true; chart.options.devicePixelRatio = undefined; chart.resize(); });
+    controls.forEach(({ control, disabled }) => { control.disabled = disabled; });
+    exportInProgress = false;
+    renderViewbar(); compute();
     window.setTimeout(() => showMessage(''), 5_000);
   }
 }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createDefaultMember, validateMember } from '../src/model';
+import { createDefaultMember as defaultMember, validateMember } from '../src/model';
+
+const createDefaultMember = (year: number, overrides: Parameters<typeof defaultMember>[1] = {}) =>
+  defaultMember(year, { birthMonth: 1, pensionStartMonth: 1, ...overrides });
 
 const OCTOBER_2026 = 2026 * 12 + 9;
 
