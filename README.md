@@ -39,6 +39,8 @@ Výstup je v `dist/` a používá relativní cesty (`base: './'`), takže jej lz
 ## Základní předpoklady modelu
 
 - Milníky věku nastávají v zadaném měsíci narození. Začátek státního důchodu má vlastní měsíc a rok.
+- Kladný starobní důchod před 50. rokem je mimo podporovaný rozsah kalkulačky. Jde o produktový limit pro zjevně nevěrohodná zadání, nikoli zákonný důchodový věk nebo potvrzení nároku.
+- Navržený rok důchodu (výchozí věk 65 let) sleduje změny roku narození. Po ruční úpravě roku důchodu se už neposouvá. Starší uložené termíny bez informace o jejich původu zůstávají zachované.
 - Starší v2/v3 kalkulace zachovají vstupy, chybějící měsíce však vyžadují doplnění. Bez něj se výsledky nezobrazí. V4 používá nový klíč úložiště; starší data se automaticky nemažou.
 - Cílová renta znamená celkový požadovaný příjem včetně DPS a státního důchodu. Skutečné výplaty, pokrytí cíle, přebytek a schodek jsou oddělené. Přebytek se nereinvestuje.
 - Před začátkem renty je cílový příjem neaktivní (0); případný státní důchod se zaznamená jako příjem mimo cíl a neovlivní investiční kapitál.

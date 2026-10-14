@@ -92,3 +92,18 @@ Inflace a nominální/reálná renta, valorizace, čistý výnos po poplatcích/
 - PDF, screenshoty a traces jsou pouze lokální syntetické testovací artefakty v ignorovaném `test-results/`. Žádné klientské údaje ani přihlašovací údaje se necommitují.
 - Chromium potřebovalo na tomto hostu knihovny rozbalené do izolovaného `/tmp` adresáře; nebylo použito sudo ani změny systémových balíčků.
 - Přidáno CI pro PR do `main`: Node.js 24 + instalace/test/build, `contents: read`, bez nasazování. Skutečný stav GitHub runu je potřeba posuzovat podle PR kontrol, ne podle lokálního běhu.
+
+## Opravy nezávislého review PR #1
+
+Nálezy z [review na HEAD c838f85](https://github.com/afr0m3n/rentierska-kalkulacka/pull/1#pullrequestreview-5521688616) byly řešeny v původní větvi `fix/etapa-1-5` bez dalších finančních funkcí.
+
+| Nález | Oprava | Regrese |
+| --- | --- | --- |
+| P1: kladný starobní důchod v měsíci narození / ve 26 letech | Přidán explicitní limit modelu: kladná částka nejdříve od 50 let, měsíčně přesně. Hlášení uvádí, že nejde o zákonný nárok. Nulová částka tento limit neaktivuje. | Unit: věk 0, 26, měsíc před 50. rokem, přesná hranice a nulová částka. E2E: chyby blokují výsledky a PDF. |
+| P1: rok důchodu zůstane po změně narození zastaralý | `pensionYearSource` rozlišuje návrh a explicitní zadání. Změna ročníku upraví jen návrh; ruční zadání (i stejné hodnoty) jej zamkne. Staré uložené kalkulace bez metadat zachovají rok, protože jeho původ neznáme. | Unit: mladší/starší ročník, ruční zadání, v4 migrace a round-trip metadat. E2E: posun návrhu, zachování ručního data i po reloadu. |
+| P2: první/poslední částečný rok grafu je mimo osu nebo oříznutý | Kapitál má stále přesné měsíční hranice; graf příjmů má vlastní osu od začátku prvního roku do konce posledního aktivního roku. Lednový exkluzivní konec nepřidává prázdný rok. | Unit: říjen 2026–říjen 2027, referenční příjmy 500 a 1 500 Kč/měs. E2E: skutečné obdélníky obou krajních sloupců jsou celé uvnitř plochy grafu. |
+| P2: chyby v zavřené osobě / nejasný globální výnos | Zavřený `<summary>` má červený textový marker a počet chyb. Souhrn výsledků jmenuje neplatné osoby. U globálních výnosů se zobrazí název pole a konkrétní důvod. | E2E: chybná osoba zavřená, viditelný marker a jméno; oprava odstraní marker. Globální výnos 31 % ukáže konkrétní limit a po opravě hlášení zmizí. |
+
+Hranice 50 let je záměrně široký produktový filtr tohoto modelu. Nepočítá legislativní důchodový věk ani nezavádí nová pravidla DPS. Přijetí pozdějšího data samo o sobě nepotvrzuje nárok.
+
+Ověření oprav review (14. 10. 2026): `npm test` 60/60, `npm run test:e2e` 18/18 (desktop + mobil), `npm run build` a `git diff --check` úspěšné. Skutečné PDF bylo znovu staženo v obou viewports, všechny tři stránky otevřeny/renderovány a vizuálně zkontrolovány; tabulky, oba grafy a stránkování jsou čitelné. Artefakty zůstávají pouze v ignorovaném `test-results/`.
