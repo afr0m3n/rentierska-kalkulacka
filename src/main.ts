@@ -587,7 +587,7 @@ function renderSummary(results: ComputedMember[]): void {
     <div><div class="k">Odkládáte celkem</div><div class="v">${money(saving)}</div><div class="s">měsíčně${oneTime ? ` + ${largeMoney(oneTime)} jednorázově` : ''}</div></div>
     <div><div class="k">Potřebná úložka pro cíl</div><div class="v">${allSolvable ? money(required) : '—'}</div><div class="s">investice + DPS měsíčně</div></div>
     <div><div class="k">Součet osobních udržitelných rent</div><div class="v">${money(sustainable)}</div><div class="s">bez sdílení portfolií</div></div>
-    <div><div class="k">Kapitál na startu renty</div><div class="v">${capital === null ? '—' : largeMoney(capital)}</div><div class="s">${capital === null ? 'nelze sčítat: osoby začínají v různých letech' : 'součet ve společném měsíci startu'}</div></div>
+    <div><div class="k">Kapitál na startu renty</div><div class="v">${capital === null ? '—' : largeMoney(capital)}</div><div class="s">${capital === null ? 'nelze sčítat: osoby začínají v různých termínech' : 'součet ve společném měsíci startu'}</div></div>
     ${status}`;
 }
 
