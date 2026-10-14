@@ -1,0 +1,24 @@
+{
+  "name": "rentierska-kalkulacka",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fontsource/montserrat": "^5.2.6",
+    "chart.js": "^4.5.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^3.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7",
+    "vitest": "^3.2.4"
+  }
+}

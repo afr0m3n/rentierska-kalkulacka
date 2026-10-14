@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content="Rentiérská kalkulačka pro modelaci spoření a čerpání renty." />
+    <title>Rentiérská kalkulačka</title>
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">VK</div>
+        <div>
+          <h1>Rentiérská kalkulačka</h1>
+          <p>Spoření, čerpání z investic a penzijka a nástup státního důchodu na jedné časové ose.</p>
+        </div>
+      </div>
+      <div class="actions">
+        <label class="f"><span>Klient / domácnost</span><span class="in"><input type="text" id="clientName" placeholder="Jméno klienta" autocomplete="off" /></span></label>
+        <label class="f"><span>Zpracoval</span><span class="in"><input type="text" id="advisorName" placeholder="Jméno poradce" autocomplete="off" /></span></label>
+        <button class="btn" id="newCalculation" type="button">Nová kalkulace</button>
+        <button class="btn primary" id="exportPdf" type="button">Exportovat do PDF</button>
+        <label class="privacy"><input type="checkbox" id="saveDraft" /> Ukládat rozpracovanou kalkulaci v tomto prohlížeči</label>
+      </div>
+      <p class="exportmsg" id="exportMessage" role="status" hidden></p>
+    </header>
+
+    <main class="layout">
+      <aside class="panel">
+        <section class="block">
+          <h2>Výnosy produktů (p.a.)</h2>
+          <div class="grid2" id="globalInputs"></div>
+          <label class="check"><input type="checkbox" id="stateContribution" /> Modelovat státní příspěvek k DPS při splnění nároku (20 % z vkladu 500–1 700 Kč, max. 340 Kč/měs.)</label>
+          <p class="hint">Nominální roční sazba se dělí 12 a připisuje měsíčně. Po přiznání modelovaného státního důchodu se státní příspěvek DPS nepočítá.</p>
+        </section>
+        <section class="block">
+          <h2>Členové domácnosti</h2>
+          <div id="members"></div>
+          <button class="btn primary" id="addMember" type="button">Přidat člena domácnosti</button>
+        </section>
+      </aside>
+
+      <section class="results">
+        <div class="summary" id="summary" aria-live="polite"></div>
+        <div class="viewbar" id="viewbar" role="group" aria-label="Zobrazení grafů"></div>
+
+        <figure class="chartbox">
+          <figcaption>
+            <div>
+              <h2>Cesta kapitálu</h2>
+              <p>Jak roste majetek v investicích a v penzijku během spoření a jak se postupně spotřebovává při čerpání renty.</p>
+            </div>
+            <div class="legend"><span><i class="legend-inv"></i>Investiční portfolio</span><span><i class="legend-dps"></i>Penzijní spoření (DPS)</span></div>
+          </figcaption>
+          <div class="canvas-wrap"><canvas id="capitalChart" aria-label="Graf vývoje kapitálu"></canvas></div>
+        </figure>
+
+        <figure class="chartbox">
+          <figcaption>
+            <div>
+              <h2>Z čeho se renta platí</h2>
+              <p>Průměrná měsíční renta v jednotlivých letech podle zdroje. Červeně část, na kterou už kapitál nestačí.</p>
+            </div>
+            <div class="legend"><span><i class="legend-inv"></i>Investice</span><span><i class="legend-dps"></i>Penzijko (DPS)</span><span><i class="legend-pen"></i>Státní důchod</span><span><i class="legend-short"></i>Chybí</span></div>
+          </figcaption>
+          <div class="canvas-wrap short"><canvas id="rentChart" aria-label="Graf zdrojů renty"></canvas></div>
+        </figure>
+
+        <section class="sect">
+          <h2>Fáze krok za krokem</h2>
+          <div id="journeys"></div>
+        </section>
+
+        <section class="sect">
+          <h2>Výsledky po osobách</h2>
+          <div class="kpis" id="kpis"></div>
+        </section>
+
+        <p class="note">Orientační model, nikoli nabídka ani investiční poradenství. Věk se počítá od 1. ledna roku narození. Výnos je nominální p.a. dělený 12, vklady a výběry probíhají na začátku měsíce. Model nezahrnuje inflaci, poplatky ani daně. Nárok na DPS a státní příspěvek je nutné ověřit podle smlouvy a aktuální legislativy.</p>
+      </section>
+    </main>
+    <div id="report" aria-hidden="true"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
