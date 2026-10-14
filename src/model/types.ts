@@ -10,6 +10,8 @@ export interface MemberInput {
   name: string;
   active: boolean;
   birthYear: number;
+  /** Calendar month 1..12; null means unknown. */
+  birthMonth: number | null;
   targetMonthlyRent: number;
   monthlyInvestment: number;
   initialInvestment: number;
@@ -21,7 +23,10 @@ export interface MemberInput {
   dpsDrawdownYears: number;
   rentStartAge: number;
   rentEndAge: number;
+  /** Retained for v2/v3 migration only; simulation uses explicit pension date. */
   pensionAge: number;
+  pensionStartYear: number;
+  pensionStartMonth: number | null;
   monthlyPension: number;
 }
 
@@ -40,9 +45,16 @@ export interface CapitalSample {
 }
 
 export interface MonthlyDraw {
+  /** Zero before the requested rent period. */
+  target: number;
   investment: number;
   dps: number;
   pension: number;
+  dpsUsed: number;
+  pensionUsed: number;
+  covered: number;
+  surplus: number;
+  actualIncome: number;
   shortfall: number;
 }
 

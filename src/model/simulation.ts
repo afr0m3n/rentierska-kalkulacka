@@ -1,20 +1,24 @@
 import type { GlobalAssumptions, MemberInput, SimulationResult } from './types';
+import { assertValidScenario, MAX_MODELED_BALANCE } from './validation';
+import { timeline } from './timeline';
 
-export const SHORTFALL_TOLERANCE = 0.01;
+export const SHORTFALL_TOLERANCE = 1e-6;
 
 export function monthlyRate(nominalAnnualPercent: number): number {
+  if (!Number.isFinite(nominalAnnualPercent) || nominalAnnualPercent <= -100 || nominalAnnualPercent > 30) throw new RangeError('Neplatná roční sazba.');
   return nominalAnnualPercent / 1_200;
 }
 
 /** Payment at the beginning of each month, followed by that month's return. */
 export function annuityDuePayment(principal: number, rate: number, months: number): number {
-  if (months <= 0) return principal;
-  if (principal <= 0) return 0;
+  if (!Number.isFinite(principal) || principal < 0 || !Number.isFinite(rate) || rate <= -1 || !Number.isInteger(months) || months <= 0) throw new RangeError('Neplatné zadání anuity.');
+  if (principal === 0) return 0;
   if (rate === 0) return principal / months;
-  return principal * rate / ((1 + rate) * (1 - (1 + rate) ** -months));
+  return principal * rate / ((1 + rate) * -Math.expm1(-months * Math.log1p(rate)));
 }
 
 export function stateContributionFor(monthlyContribution: number, enabled: boolean): number {
+  if (!Number.isFinite(monthlyContribution) || monthlyContribution < 0 || monthlyContribution > 1_000_000 || typeof enabled !== 'boolean') throw new RangeError('Neplatný měsíční vklad DPS.');
   if (!enabled || monthlyContribution < 500) return 0;
   return Math.min(monthlyContribution, 1_700) * 0.2;
 }
@@ -26,17 +30,13 @@ export function simulate(
   overrides: Partial<MemberInput> = {},
 ): SimulationResult {
   const member = { ...baseMember, ...overrides };
+  assertValidScenario(member, assumptions, asOfMonth);
   const investmentAccumulationRate = monthlyRate(assumptions.investmentAccumulationRate);
   const investmentDrawdownRate = monthlyRate(assumptions.investmentDrawdownRate);
   const dpsAccumulationRate = monthlyRate(assumptions.dpsAccumulationRate);
   const dpsDrawdownRate = monthlyRate(assumptions.dpsDrawdownRate);
 
-  const birthMonth = member.birthYear * 12;
-  const rentStartMonth = birthMonth + member.rentStartAge * 12;
-  const endMonth = birthMonth + member.rentEndAge * 12;
-  const dpsDrawdownStartMonth = birthMonth + member.dpsDrawdownAge * 12;
-  const dpsDrawdownEndMonth = dpsDrawdownStartMonth + member.dpsDrawdownYears * 12;
-  const pensionStartMonth = birthMonth + member.pensionAge * 12;
+  const { birthMonth, rentStartMonth, endMonth, dpsDrawdownStartMonth, dpsDrawdownEndMonth, pensionStartMonth } = timeline(member);
   const currentYear = Math.floor(asOfMonth / 12);
   const oneTimeMonth = member.oneTimeInvestmentYear === currentYear
     ? asOfMonth
@@ -59,16 +59,18 @@ export function simulate(
   const draws: SimulationResult['draws'] = new Map();
 
   for (let month = asOfMonth; month < endMonth; month += 1) {
+    if (![investment, dps].every((value) => Number.isFinite(value) && value >= 0 && value <= MAX_MODELED_BALANCE)) throw new RangeError('Modelovaný kapitál překročil bezpečný numerický rozsah. Snižte výnos nebo délku modelace.');
     if (month === oneTimeMonth && member.oneTimeInvestment > 0) {
       investment += member.oneTimeInvestment;
       contributedInvestment += member.oneTimeInvestment;
     }
 
-    if (month === asOfMonth || month % 12 === 0) {
-      samples.push({ month, investment, dps });
-    }
+    samples.push({ month, investment, dps });
 
     if (month < rentStartMonth) {
+      const pension = month >= pensionStartMonth ? member.monthlyPension : 0;
+      draws.set(month, { target: 0, investment: 0, dps: 0, pension, pensionUsed: 0, dpsUsed: 0,
+        covered: 0, actualIncome: pension, surplus: pension, shortfall: 0 });
       const stateContribution = month < pensionStartMonth ? monthlyStateContribution : 0;
       investment += member.monthlyInvestment;
       dps += member.monthlyDps + stateContribution;
@@ -84,9 +86,7 @@ export function simulate(
       capitalAtRentStart = { month, investment, dps };
     }
 
-    const pension = month >= pensionStartMonth
-      ? Math.min(member.monthlyPension, member.targetMonthlyRent)
-      : 0;
+    const pension = month >= pensionStartMonth ? member.monthlyPension : 0;
     let dpsDraw = 0;
     if (month >= dpsDrawdownStartMonth && month < dpsDrawdownEndMonth && dps > 0) {
       if (dpsPayment === null) {
@@ -98,9 +98,15 @@ export function simulate(
     const remainingNeed = Math.max(0, member.targetMonthlyRent - pension - dpsDraw);
     const investmentDraw = Math.min(remainingNeed, Math.max(0, investment));
     const shortfall = Math.max(0, remainingNeed - investmentDraw);
+    // Pension covers the target first, then DPS. Surplus leaves the model.
+    const pensionUsed = Math.min(pension, member.targetMonthlyRent);
+    const dpsUsed = Math.min(dpsDraw, Math.max(0, member.targetMonthlyRent - pensionUsed));
+    const actualIncome = pension + dpsDraw + investmentDraw;
     if (shortfall > SHORTFALL_TOLERANCE && depletedAt === null) depletedAt = month;
     totalShortfall += shortfall;
-    draws.set(month, { investment: investmentDraw, dps: dpsDraw, pension, shortfall });
+    draws.set(month, { target: member.targetMonthlyRent, investment: investmentDraw, dps: dpsDraw, pension, pensionUsed, dpsUsed,
+      covered: pensionUsed + dpsUsed + investmentDraw, actualIncome,
+      surplus: Math.max(0, actualIncome - member.targetMonthlyRent), shortfall });
 
     investment = Math.max(0, investment - investmentDraw) * (1 + investmentDrawdownRate);
     dps = Math.max(0, dps - dpsDraw) * (1 + dpsDrawdownRate);
@@ -108,6 +114,7 @@ export function simulate(
     if (Math.abs(dps) < 1e-8) dps = 0;
   }
 
+  if (![investment, dps].every((value) => Number.isFinite(value) && value <= MAX_MODELED_BALANCE)) throw new RangeError('Konečný kapitál překročil bezpečný numerický rozsah.');
   if (capitalAtRentStart === null) {
     capitalAtRentStart = { month: rentStartMonth, investment, dps };
   }
